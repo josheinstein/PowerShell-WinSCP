@@ -88,9 +88,22 @@ function Open-WinSCPSession {
         if ($HostKey) { $SessionOptions.SshHostKeyFingerprint = $HostKey }
 
         if ($IgnoreHostSecurity) {
-            $SessionOptions.GiveUpSecurityAndAcceptAnySshHostKey = $true
-            $SessionOptions.GiveUpSecurityAndAcceptAnySslHostCertificate = $true
-            $SessionOptions.GiveUpSecurityAndAcceptAnyTlsHostCertificate = $true
+            
+            if ($Protocol -in ([WinScp.Protocol]::Sftp, [WinScp.Protocol]::Scp)) {
+                $SessionOptions.GiveUpSecurityAndAcceptAnySshHostKey = $true
+            }
+            
+            if ($Security -eq [WinScp.FtpSecure]::Implicit) {
+                $SessionOptions.GiveUpSecurityAndAcceptAnyTlsHostCertificate = $true
+                $SessionOptions.GiveUpSecurityAndAcceptAnySslHostCertificate = $true
+            }
+            elseif ($Security -eq [WinScp.FtpSecure]::ExplicitSsl) {
+                $SessionOptions.GiveUpSecurityAndAcceptAnySslHostCertificate = $true
+            }
+            elseif ($Security -eq [WinScp.FtpSecure]::ExplicitTls) {
+                $SessionOptions.GiveUpSecurityAndAcceptAnyTlsHostCertificate = $true
+            }
+
         }
 
         $Script:WinSCP_Session = New-Object WinSCP.Session
