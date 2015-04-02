@@ -50,6 +50,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Folder Include="Bin\" />
+    <Folder Include="Tests\" />
     <Folder Include="Types\" />
   </ItemGroup>
   <ItemGroup>

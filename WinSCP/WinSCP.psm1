@@ -1,4 +1,5 @@
 [WinSCP.Session]$WinSCP_Session = $null
+[Int32]$WinSCP_ProgressID = Get-Random
 
 #.SYNOPSIS
 # Opens an active WinSCP session so that other commands can be
@@ -106,11 +107,39 @@ function Open-WinSCPSession {
 
         }
 
-        $Script:WinSCP_Session = New-Object WinSCP.Session
-        $Script:WinSCP_Session.Open($SessionOptions)
+        try {
 
-        if ($PassThru) {
-            Write-Output $Script:WinSCP_Session
+            $Script:WinSCP_Session = New-Object WinSCP.Session
+
+            $Script:WinSCP_Session.add_FileTransferProgress({
+                param($sender,[WinSCP.FileTransferProgressEventArgs]$e)
+                $CPS = [Einstein.PowerShell.DataSize]$e.CPS
+                $ProgressArgs = @{
+                    Id              = $Script:WinSCP_ProgressID
+                    Activity        = "$(if ($e.Side -eq 'Local') {'Sending'} else {'Receiving'}) ($CPS/s)"
+                    Status          = $e.FileName
+                    PercentComplete = $e.OverallProgress * 100
+                    Completed       = $(if ($e.OverallProgress -ge 1) {$true} else {$false})
+                }
+                Write-Progress @ProgressArgs
+            })
+
+            $Script:WinSCP_Session.Open($SessionOptions)
+
+            if ($PassThru) {
+                Write-Output $Script:WinSCP_Session
+            }
+
+        }
+        catch {
+
+            if ($Script:WinSCP_Session) {
+                $Script:WinSCP_Session.Dispose();
+                $Script:WinSCP_Session = $null
+            }
+
+            Write-Error $_
+
         }
 
     }
@@ -127,18 +156,20 @@ function Close-WinSCPSession {
         # The session to close. If not specified, the currently active
         # default session is closed.
         [Parameter()]
-        [WinSCP.Session]$Session = $Null
+        [WinSCP.Session]$Session = $Script:WinSCP_Session
 
     )
 
     process {
 
         if ($Session) {
+            
             $Session.Dispose()
-        }
-        elseif ($Script:WinSCP_Session) {
-            $Script:WinSCP_Session.Dispose()
-            $Script:WinSCP_Session = $Null
+
+            if ($Session -eq $Script:WinSCP_Session) {
+                $Script:WinSCP_Session = $Null
+            }
+
         }
         else {
             Write-Warning "There is no currently active session. Use Open-WinSCPSession to open an active session."
@@ -154,11 +185,20 @@ function Close-WinSCPSession {
 function Get-WinSCPDirectory {
 
     [CmdletBinding()]
+    [OutputType([WinSCP.RemoteFileInfo])]
     param(
 
         # The path on the remote host to get a directory listing for.
         [Parameter(Position=1)]
         [String]$Path = '.',
+
+        # When specified without -Directory, gets only files.
+        [Parameter()]
+        [Switch]$File,
+
+        # When specified without -File, gets only directories.
+        [Parameter()]
+        [Switch]$Directory,
 
         # The remote session to use.
         [Parameter()]
@@ -169,7 +209,101 @@ function Get-WinSCPDirectory {
     process {
 
         if ($Result = $Session.ListDirectory($Path)) {
-            Write-Output $Result.Files
+
+            if (!$Path.EndsWith('/')) { $Path += '/' }
+
+            foreach ($RemoteFileInfo in $Result.Files) {
+
+                # If neither or both of these switches is specified, the
+                # behavior is to include both directories and files.
+                # If one or the other is specified, it skips output accordingly.
+                if ($File.IsPresent -ne $Directory.IsPresent) {
+                    if ($File.IsPresent -eq $RemoteFileInfo.IsDirectory) { continue; }
+                    if ($Directory.IsPresent -ne $RemoteFileInfo.IsDirectory) { continue; }
+                }
+
+                # Skip the useless . and .. entries
+                if ($RemoteFileInfo.Name -match '^\.\.?$') { continue; }
+
+                # Adds the full path of the file to the output object
+                $RemoteFileInfo |
+                    Add-Member -PassThru NoteProperty Path "${Path}$($RemoteFileInfo.Name)" |
+                    Add-Member -PassThru NoteProperty BaseName ([IO.Path]::GetFileNameWithoutExtension($RemoteFileInfo.Name))
+
+            }
+        }
+
+    }
+
+}
+
+#.SYNOPSIS
+# Uploads one or more files to the remote host from
+# the current working directory or a specified local path.
+function Send-WinSCPFiles {
+
+    [CmdletBinding(SupportsShouldProcess=$true)]
+    param(
+
+        # A path on the local system to upload the file from.
+        [Alias('Path')]
+        [Parameter(Position=1, Mandatory=$true, ValueFromPipeline=$true)]
+        [String]$LocalPath,
+
+        # The path of a file on the remote host or the path to a directory
+        # on the remote host to upload to.
+        [Parameter(Position=2)]
+        [String]$RemotePath = '.',
+
+        # Optionally specifies one or more wildcard masks that are matched against
+        # the local path to limit the uploaded files to those that match at
+        # least one of the masks specified.
+        [Parameter()]
+        [String[]]$Include,
+
+        # Optionally specifies one or more wildcard masks that are matched against
+        # the local path to limit the uploaded files to
+        # those that do not match any of the masks specified.
+        [Parameter()]
+        [String[]]$Exclude,
+
+        # The remote session to use.
+        [Parameter()]
+        [WinSCP.Session]$Session = $Script:WinSCP_Session
+
+    )
+
+    process {
+
+        # Expand wildcards and apply include/exclude logic
+        $LocalFiles = @(Get-Item -Path:$LocalPath -Include:$Include -Exclude:$Exclude)
+
+        foreach ($LocalFile in $LocalFiles) {
+        
+            if ($PSCmdlet.ShouldProcess($LocalFile, "Upload $LocalFile")) {
+
+                $TransferOptions = New-Object WinSCP.TransferOptions
+                $TransferOptions.TransferMode = 'Binary'
+
+                $RemoteFile = $RemotePath
+                if ($RemoteFile.EndsWith('/')) { $RemoteFile += (Split-Path -Leaf $LocalFile) }
+
+                Write-Verbose "PutFiles: Local=$LocalFile, Remote=$RemoteFile"
+
+                $Result = $Session.PutFiles($LocalFile, $RemoteFile, $False, $TransferOptions)
+        
+                # Write the FileInfo about the successfully downloaded files to the pipeline
+                foreach ($Transfer in $Result.Transfers) {
+                    if ($Transfer.Error) {
+                        Write-Warning "$($Transfer.FileName) - $($Transfer.Error.Message)"
+                    }
+                    else {
+                        Get-Item -LiteralPath:$Transfer.Destination -ErrorAction SilentlyContinue
+                    }
+                }
+
+            }
+        
         }
 
     }
@@ -179,15 +313,16 @@ function Get-WinSCPDirectory {
 #.SYNOPSIS
 # Downloads one or more files from the remote host and saves them to
 # the current working directory or a specified local path.
-function Get-WinSCPFiles {
+function Receive-WinSCPFiles {
 
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param(
 
         # The path of a file on the remote host (wildcards allowed) or the
         # path to a directory on the remote host (all files in the directory)
         # to download.
-        [Parameter(Position=1, Mandatory=$true)]
+        [Alias('Path')]
+        [Parameter(Position=1, Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
         [String]$RemotePath,
 
         # A path on the local system to download the file to. If not specified,
@@ -200,6 +335,24 @@ function Get-WinSCPFiles {
         [Parameter()]
         [Switch]$Remove,
 
+        # Optionally specifies one or more wildcard masks that are matched against
+        # the remote path to limit the downloaded files to those that match at
+        # least one of the masks specified.
+        # Note that this parameter will not behave as expected when -RemotePath
+        # specifies a wildcard or directory name, because it is matched against
+        # the remote path *before* wildcard expansion or directory listing.
+        [Parameter()]
+        [String[]]$Include,
+
+        # Optionally specifies one or more wildcard masks that are matched against
+        # the remote path to limit the downloaded files to
+        # those that do not match any of the masks specified.
+        # Note that this parameter will not behave as expected when -RemotePath
+        # specifies a wildcard or directory name, because it is matched against
+        # the remote path *before* wildcard expansion or directory listing.
+        [Parameter()]
+        [String[]]$Exclude,
+
         # The remote session to use.
         [Parameter()]
         [WinSCP.Session]$Session = $Script:WinSCP_Session
@@ -208,34 +361,71 @@ function Get-WinSCPFiles {
 
     process {
 
-        $LocalPathInfo = Resolve-Path -LiteralPath:$LocalPath
-        if ($LocalPathInfo.Provider.Name -ne 'FileSystem') {
-            Write-Error "Local path must be a valid FileSystem path."
-            Return
-        }
-        else {
-            # Stuff it back into the LocalPath variable.
-            # If it's a directory, though, we need to tack on the \* or else
-            # WinSCP will complain.
-            $LocalPath = $LocalPathInfo.ProviderPath
-            if (Test-Path -LiteralPath:$LocalPath -PathType Container) {
-                $LocalPath += '\*'
+        # Determine inclusion
+        $IsIncluded = $true
+        if ($Include.Length) {
+            $IsIncluded = $false
+            foreach ($Pattern in $Include) {
+                if ((Split-Path -Leaf $RemotePath) -like $Pattern) {
+                    Write-Verbose "$RemotePath included by $Pattern"
+                    $IsIncluded = $true
+                    break
+                }
             }
         }
 
-        $TransferOptions = New-Object WinSCP.TransferOptions
-        $TransferOptions.TransferMode = 'Binary'
+        # Determine exclusion
+        $IsExcluded = $False
+        if ($Exclude.Length) {
+            $IsExcluded = $False
+            foreach ($Pattern in $Exclude) {
+                if ((Split-Path -Leaf $RemotePath) -like $Pattern) {
+                    Write-Verbose "$RemotePath excluded by $Pattern"
+                    $IsExcluded = $True
+                    break
+                }
+            }
+        }
 
-        $Result = $Session.GetFiles($RemotePath, $LocalPath, $Remove.IsPresent, $TransferOptions)
-        
-        # Write the FileInfo about the successfully downloaded files to the pipeline
-        foreach ($Transfer in $Result.Transfers) {
-            if ($Transfer.Error) {
-                Write-Warning "$($Transfer.FileName) - $($Transfer.Error.Message)"
+        if ($IsIncluded -and !$IsExcluded) {
+
+            $LocalPathInfo = Resolve-Path -LiteralPath:$LocalPath
+            if ($LocalPathInfo.Provider.Name -ne 'FileSystem') {
+                Write-Error "Local path must be a valid FileSystem path."
+                Return
             }
             else {
-                Get-Item -LiteralPath:$Transfer.Destination -ErrorAction SilentlyContinue
+                # Stuff it back into the LocalPath variable.
+                # If it's a directory, though, we need to tack on the \* or else
+                # WinSCP will complain.
+                $LocalPath = $LocalPathInfo.ProviderPath
+                if (Test-Path -LiteralPath:$LocalPath -PathType Container) {
+                    if (!$LocalPath.EndsWith('\')) {
+                        $LocalPath += '\'
+                    }
+                    #$LocalPath += '*'
+                }
             }
+
+            if ($PSCmdlet.ShouldProcess($RemotePath, "Download to $LocalPath")) {
+
+                $TransferOptions = New-Object WinSCP.TransferOptions
+                $TransferOptions.TransferMode = 'Binary'
+
+                $Result = $Session.GetFiles($RemotePath, $LocalPath, $Remove.IsPresent, $TransferOptions)
+        
+                # Write the FileInfo about the successfully downloaded files to the pipeline
+                foreach ($Transfer in $Result.Transfers) {
+                    if ($Transfer.Error) {
+                        Write-Warning "$($Transfer.FileName) - $($Transfer.Error.Message)"
+                    }
+                    else {
+                        Get-Item -LiteralPath:$Transfer.Destination -ErrorAction SilentlyContinue
+                    }
+                }
+
+            }
+
         }
 
     }
@@ -243,3 +433,6 @@ function Get-WinSCPFiles {
 }
 
 Export-ModuleMember -Function *-*
+
+Set-Alias Get-WinSCPFiles Receive-WinSCPFiles 
+Export-ModuleMember -Alias Get-WinSCPFiles
