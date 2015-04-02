@@ -113,7 +113,7 @@ function Open-WinSCPSession {
 
             $Script:WinSCP_Session.add_FileTransferProgress({
                 param($sender,[WinSCP.FileTransferProgressEventArgs]$e)
-                $CPS = [Einstein.PowerShell.DataSize]$e.CPS
+                $CPS = [Int64]$e.CPS
                 $ProgressArgs = @{
                     Id              = $Script:WinSCP_ProgressID
                     Activity        = "$(if ($e.Side -eq 'Local') {'Sending'} else {'Receiving'}) ($CPS/s)"
