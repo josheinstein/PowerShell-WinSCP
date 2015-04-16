@@ -63,7 +63,6 @@
     <Content Include="Bin\readme_automation.txt" />
     <Content Include="Bin\WinSCP.com" />
     <Content Include="Bin\WinSCP.exe" />
-    <Content Include="Bin\WinSCP.ini" />
     <Content Include="Bin\WinSCPnet.dll" />
     <Content Include="WinSCP.psm1" />
   </ItemGroup>
