@@ -200,6 +200,20 @@ function Get-WinSCPDirectory {
         [Parameter()]
         [Switch]$Directory,
 
+        # When specified, recursively lists directories that are returned
+        [Parameter()]
+        [Switch]$Recurse,
+
+        # When specified, limits the output to only files or directories whose names
+        # match the given pattern(s).
+        [Parameter()]
+        [String[]]$Include,
+
+        # When specified, limits the output to only files or directories whose names
+        # do not match the given pattern(s).
+        [Parameter()]
+        [String[]]$Exclude,
+
         # The remote session to use.
         [Parameter()]
         [WinSCP.Session]$Session = $Script:WinSCP_Session
@@ -214,21 +228,51 @@ function Get-WinSCPDirectory {
 
             foreach ($RemoteFileInfo in $Result.Files) {
 
-                # If neither or both of these switches is specified, the
-                # behavior is to include both directories and files.
-                # If one or the other is specified, it skips output accordingly.
-                if ($File.IsPresent -ne $Directory.IsPresent) {
-                    if ($File.IsPresent -eq $RemoteFileInfo.IsDirectory) { continue; }
-                    if ($Directory.IsPresent -ne $RemoteFileInfo.IsDirectory) { continue; }
-                }
-
                 # Skip the useless . and .. entries
                 if ($RemoteFileInfo.Name -match '^\.\.?$') { continue; }
 
                 # Adds the full path of the file to the output object
-                $RemoteFileInfo |
+                $RemoteFileInfo = $RemoteFileInfo |
                     Add-Member -PassThru NoteProperty Path "${Path}$($RemoteFileInfo.Name)" |
                     Add-Member -PassThru NoteProperty BaseName ([IO.Path]::GetFileNameWithoutExtension($RemoteFileInfo.Name))
+
+                # If neither or both of these switches is specified, the
+                # behavior is to include both directories and files.
+                # If one or the other is specified, it skips output accordingly.
+                $WriteOut = $True
+                if ($File.IsPresent -ne $Directory.IsPresent) {
+                    if ($File.IsPresent -eq $RemoteFileInfo.IsDirectory) { $WriteOut = $False }
+                    if ($Directory.IsPresent -ne $RemoteFileInfo.IsDirectory) { $WriteOut = $False }
+                }
+
+                # Apply the Include filter
+                if ($WriteOut -and $Include.Length) {
+                    foreach ($Pattern in $Include) {
+                        if ($RemoteFileInfo.Name -notlike $Pattern) {
+                            $WriteOut = $False
+                            break
+                        }
+                    }
+                }
+
+                # Apply the Exclude filter
+                if ($WriteOut-and $Exclude.Length) {
+                    foreach ($Pattern in $Exclude) {
+                        if ($RemoteFileInfo.Name -like $Pattern) {
+                            $WriteOut = $False
+                            break
+                        }
+                    }
+                }
+
+                # Send the file/directory result to the pipeline
+                if ($WriteOut) { Write-Output $RemoteFileInfo }
+
+                # Attempt to recursively call the function
+                # Skip directories beginning with a dot
+                if ($Recurse -and $RemoteFileInfo.IsDirectory -and $RemoteFileInfo.Name -notlike '.*') {
+                    Get-WinSCPDirectory -Path "$($RemoteFileInfo.Path)/" -File:$File -Directory:$Directory -Recurse -Include:$Include -Exclude:$Exclude -Session $Session
+                }
 
             }
         }
