@@ -236,37 +236,42 @@ function Get-WinSCPDirectory {
                     Add-Member -PassThru NoteProperty Path "${Path}$($RemoteFileInfo.Name)" |
                     Add-Member -PassThru NoteProperty BaseName ([IO.Path]::GetFileNameWithoutExtension($RemoteFileInfo.Name))
 
+                # Determine inclusion
+                $IsIncluded = $true
+                if ($Include.Length) {
+                    $IsIncluded = $false
+                    foreach ($Pattern in $Include) {
+                        if ($RemoteFileInfo.Name -like $Pattern) {
+                            Write-Verbose "$($RemoteFileInfo.Name) included by $Pattern"
+                            $IsIncluded = $true
+                            break
+                        }
+                    }
+                }
+
+                # Determine exclusion
+                $IsExcluded = $False
+                if ($Exclude.Length) {
+                    $IsExcluded = $False
+                    foreach ($Pattern in $Exclude) {
+                        if ($RemoteFileInfo.Name -like $Pattern) {
+                            Write-Verbose "$($RemoteFileInfo.Name) excluded by $Pattern"
+                            $IsExcluded = $True
+                            break
+                        }
+                    }
+                }
+
                 # If neither or both of these switches is specified, the
                 # behavior is to include both directories and files.
                 # If one or the other is specified, it skips output accordingly.
-                $WriteOut = $True
                 if ($File.IsPresent -ne $Directory.IsPresent) {
-                    if ($File.IsPresent -eq $RemoteFileInfo.IsDirectory) { $WriteOut = $False }
-                    if ($Directory.IsPresent -ne $RemoteFileInfo.IsDirectory) { $WriteOut = $False }
-                }
-
-                # Apply the Include filter
-                if ($WriteOut -and $Include.Length) {
-                    foreach ($Pattern in $Include) {
-                        if ($RemoteFileInfo.Name -notlike $Pattern) {
-                            $WriteOut = $False
-                            break
-                        }
-                    }
-                }
-
-                # Apply the Exclude filter
-                if ($WriteOut-and $Exclude.Length) {
-                    foreach ($Pattern in $Exclude) {
-                        if ($RemoteFileInfo.Name -like $Pattern) {
-                            $WriteOut = $False
-                            break
-                        }
-                    }
+                    if ($File.IsPresent -eq $RemoteFileInfo.IsDirectory) { $IsIncluded = $False }
+                    if ($Directory.IsPresent -ne $RemoteFileInfo.IsDirectory) { $IsIncluded = $False }
                 }
 
                 # Send the file/directory result to the pipeline
-                if ($WriteOut) { Write-Output $RemoteFileInfo }
+                if ($IsIncluded -and !$IsExcluded) { Write-Output $RemoteFileInfo }
 
                 # Attempt to recursively call the function
                 # Skip directories beginning with a dot
