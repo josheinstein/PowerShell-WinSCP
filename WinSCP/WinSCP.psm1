@@ -231,6 +231,9 @@ function Get-WinSCPDirectory {
                 # Skip the useless . and .. entries
                 if ($RemoteFileInfo.Name -match '^\.\.?$') { continue; }
 
+                # Skip files with invalid characters
+                if ($RemoteFileInfo.Name.IndexOfAny([IO.Path]::InvalidPathChars) -ge 0) { continue; }
+
                 # Adds the full path of the file to the output object
                 $RemoteFileInfo = $RemoteFileInfo |
                     Add-Member -PassThru NoteProperty Path "${Path}$($RemoteFileInfo.Name)" |
