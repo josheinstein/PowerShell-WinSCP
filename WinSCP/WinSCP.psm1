@@ -348,7 +348,7 @@ function Send-WinSCPFiles {
                 # Write the FileInfo about the successfully downloaded files to the pipeline
                 foreach ($Transfer in $Result.Transfers) {
                     if ($Transfer.Error) {
-                        Write-Warning "$($Transfer.FileName) - $($Transfer.Error.Message)"
+                        Write-Error "$($Transfer.FileName) - $($Transfer.Error.Message)"
                     }
                     else {
                         Get-Item -LiteralPath:$Transfer.Destination -ErrorAction SilentlyContinue
