@@ -336,6 +336,7 @@ function Send-WinSCPFiles {
 
                 $TransferOptions = New-Object WinSCP.TransferOptions
                 $TransferOptions.TransferMode = 'Binary'
+                $TransferOptions.ResumeSupport.State = [WinSCP.TransferResumeSupportState]::Off
 
                 $RemoteFile = $RemotePath
                 if ($RemoteFile.EndsWith('/')) { $RemoteFile += (Split-Path -Leaf $LocalFile) }
